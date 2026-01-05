@@ -4,9 +4,6 @@ from airflow.providers.postgres.hooks.postgres import PostgresHook
 from datetime import datetime
 import csv
 
-# -----------------------------
-# DAG CONFIG
-# -----------------------------
 default_args = {
     "owner": "airflow",
     "retries": 1,
@@ -21,49 +18,38 @@ dag = DAG(
     tags=["etl", "csv", "postgres"],
 )
 
-# -----------------------------
-# TASK 1: CREATE TABLE
-# -----------------------------
-def create_employee_table():
+def create_table():
     hook = PostgresHook(postgres_conn_id="postgres_default")
+    hook.run("""
+        CREATE TABLE IF NOT EXISTS raw_employee_data (
+            id INTEGER PRIMARY KEY,
+            name VARCHAR(255),
+            age INTEGER,
+            city VARCHAR(100),
+            salary NUMERIC(10,2),
+            join_date DATE
+        );
+    """)
 
-    create_table_sql = """
-    CREATE TABLE IF NOT EXISTS raw_employee_data (
-        id INTEGER PRIMARY KEY,
-        name VARCHAR(255),
-        age INTEGER,
-        city VARCHAR(100),
-        salary NUMERIC(10,2),
-        join_date DATE
-    );
-    """
-
-    hook.run(create_table_sql)
-
-# -----------------------------
-# TASK 2: TRUNCATE TABLE
-# -----------------------------
-def truncate_employee_table():
+def truncate_table():
     hook = PostgresHook(postgres_conn_id="postgres_default")
     hook.run("TRUNCATE TABLE raw_employee_data;")
 
-# -----------------------------
-# TASK 3: LOAD CSV DATA
-# -----------------------------
-def load_csv_data():
+def load_csv():
     hook = PostgresHook(postgres_conn_id="postgres_default")
     conn = hook.get_conn()
-    cursor = conn.cursor()
+    cur = conn.cursor()
 
     file_path = "/opt/airflow/data/input.csv"
-    rows_inserted = 0
+    rows = 0
 
-    with open(file_path, "r") as file:
-        reader = csv.DictReader(file)
+    with open(file_path, "r") as f:
+        reader = csv.DictReader(f)
         for row in reader:
-            cursor.execute(
+            cur.execute(
                 """
-                INSERT INTO raw_employee_data (id, name, age, city, salary, join_date)
+                INSERT INTO raw_employee_data
+                (id, name, age, city, salary, join_date)
                 VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (
@@ -75,36 +61,29 @@ def load_csv_data():
                     row["join_date"],
                 ),
             )
-            rows_inserted += 1
+            rows += 1
 
     conn.commit()
-    cursor.close()
+    cur.close()
     conn.close()
+    return rows
 
-    return rows_inserted
-
-# -----------------------------
-# AIRFLOW TASKS
-# -----------------------------
 create_table_task = PythonOperator(
-    task_id="create_table_if_not_exists",
-    python_callable=create_employee_table,
+    task_id="create_table",
+    python_callable=create_table,
     dag=dag,
 )
 
 truncate_table_task = PythonOperator(
     task_id="truncate_table",
-    python_callable=truncate_employee_table,
+    python_callable=truncate_table,
     dag=dag,
 )
 
 load_csv_task = PythonOperator(
-    task_id="load_csv_to_postgres",
-    python_callable=load_csv_data,
+    task_id="load_csv",
+    python_callable=load_csv,
     dag=dag,
 )
 
-# -----------------------------
-# TASK DEPENDENCIES
-# -----------------------------
 create_table_task >> truncate_table_task >> load_csv_task
